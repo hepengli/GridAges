@@ -1,14 +1,15 @@
 # AGES: An Agent-centric Grid Edge Simulator
 
-A lightweight, production-style **Gymnasium** environment for **power grid control**, built on [pandapower](https://www.pandapower.org/).  
+A lightweight, production-style **Gymnasium** environment for **grid edge learning control, optimization, security, and energy management**.
 It provides modular device models (DG, RES, ESS, Shunt, Transformer, Grid) with clean action/observation spaces, centralized safety metrics, and pluggable rewards — designed for Reinforcement Learning (RL) and Multi-Agent RL research.
+Plug-and-play APIs for users to implement various grid edge scenarios.
 
 ---
 
 ## Highlights
 
 - ⚡ **Plug-and-play devices**: `DG`, `RES` (solar/wind), `ESS`, `Shunt`, `Transformer` (OLTC), `Grid`, `Switch`
-- 🔌 **Pandapower integration** with idempotent device → network attachment
+- 🔌 **Pandapower integration** with idempotent device → network attachment [pandapower](https://www.pandapower.org/)
 - 🧩 **Gymnasium-compatible** single-agent base (`GridBaseEnv`)
 - 🎛️ **Mixed action spaces**: continuous (`Box`) and discrete (`Discrete` / `MultiDiscrete`) combined in a `Dict`
 - 🔄 **NormalizeActionWrapper**: agents act in `[-1, 1]`, environment rescales to physical ranges
