@@ -10,7 +10,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback, BaseCallback
 from stable_baselines3.common.logger import configure
 
-from powergrid.envs.single_agent.ieee34_mg import IEEE34Env
+from gridages.envs.single_agent.ieee34_mg import IEEE34Env
 
 LOG_DIR = "./logs/ppo"
 SAVE_DIR = "./models/ppo"
