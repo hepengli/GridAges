@@ -4,7 +4,7 @@ import pandapower as pp
 from os.path import dirname, abspath
 from gridages.devices import *
 from gridages.networks.lines import *
-from gridages.envs.multi_agent.base import GridEnv, NetworkedGridEnv
+from gridages.envs.multi_agent.base_env import GridEnv, NetworkedGridEnv
 
 from gridages.networks.ieee13 import IEEE13Bus
 from gridages.networks.ieee34 import IEEE34Bus
@@ -73,20 +73,17 @@ class MultiAgentMicrogrids(NetworkedGridEnv):
 
     def _reward_and_safety(self):
         if self.net["converged"]:
-            # reward and safety
-            rewards = {n: -a.cost for n, a in self.agents.items()}
-            safety = {n: a.safety for n, a in self.agents.items()}
+            rewards = {n: -a.cost for n, a in self.agent_envs.items()}
+            safety  = {n: a.safety for n, a in self.agent_envs.items()}
         else:
-            rewards = {n: -200.0 for n in self.agents}
-            safety = {n: 20 for n in self.agents}
-            # print('Doesn\'t converge!')
+            rewards = {n: -200.0 for n in self.agents}   # self.agents is list of ids
+            safety  = {n: 20 for n in self.agents}
 
         if self.env_config.get('penalty'):
             for name in self.agents:
-                rewards[name] -= safety[name]*self.env_config.get('penalty')
+                rewards[name] -= safety[name] * self.env_config.get('penalty')
 
         return rewards, safety
-
 
 if __name__ == '__main__':
     from gridages.envs.multi_agent.ieee34_ieee13 import MultiAgentMicrogrids

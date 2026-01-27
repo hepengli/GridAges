@@ -3,7 +3,7 @@ from gridages.envs.multi_agent.ieee34_ieee13 import MultiAgentMicrogrids
 from ray.rllib.core.rl_module.default_model_config import DefaultModelConfig
 from ray.rllib.core.rl_module.multi_rl_module import MultiRLModuleSpec
 from ray.rllib.core.rl_module.rl_module import RLModuleSpec
-from ray.rllib.env.wrappers.pettingzoo_env import PettingZooEnv
+from ray.rllib.env.wrappers.pettingzoo_env import ParallelPettingZooEnv
 from ray.rllib.utils.test_utils import (
     add_rllib_example_script_args,
     run_rllib_example_script_experiment,
@@ -50,7 +50,10 @@ if __name__ == "__main__":
     "penalty": 10,
     "share_reward": False,
     }
-    register_env("env", lambda _: MultiAgentMicrogrids(env_config))
+    register_env("env", lambda _: ParallelPettingZooEnv(
+            MultiAgentMicrogrids(env_config)
+        )
+    )
 
     # Create an env instance ONCE to extract spaces for each agent.
     probe_env = MultiAgentMicrogrids(env_config)

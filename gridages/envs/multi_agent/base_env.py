@@ -1,112 +1,404 @@
-from pettingzoo.utils.env import ParallelEnv
-from gymnasium import spaces
 import numpy as np
 import pandapower as pp
+from pettingzoo.utils.env import ParallelEnv
+import gymnasium.utils.seeding as seeding
+from abc import abstractmethod
+from collections.abc import Iterable
+from gymnasium.spaces import Box, Discrete, MultiDiscrete, Dict
+from gymnasium.spaces.utils import flatten_space, flatten
 
-class GridAgesParallelEnv(ParallelEnv):
-    metadata = {"name": "grid_ages_parallel_v0"}
+''' Grid Environment
+'''
+class GridEnv:
+    def __init__(self, net, **kwargs):
+        self.net = net
+        self.name = net.name
+        self.kwargs = kwargs
+        self.sgen = {}
+        self.storage = {}
+        self.base_power = kwargs.get('base_power', 1)
+        self.load_scale = kwargs.get('load_scale', 1)
+        self.load_rescaling(net, self.load_scale)
 
-    def __init__(self, config):
-        self.config = config
-        self.max_episode_steps = config.get("episode_length", 24)
+    def add_dataset(self, dataset):
+        self.dataset = dataset
 
-        # build pandapower net + dataset + agent controllers
-        self.net = self._build_network()
-        self.dataset = self._load_dataset()
+    def add_to(self, ext_net, bus_name):
+        self.net.ext_grid.in_service = False
+        net, index = pp.merge_nets(ext_net, self.net, validate=False, 
+                                       return_net2_reindex_lookup=True)
+        substation = pp.get_element_index(net, 'bus', bus_name)
+        ext_grid = index['bus'][self.net.ext_grid.bus.values[0]]
+        pp.fuse_buses(net, ext_grid, substation)
 
-        self._t0 = 0
-        self._t = 0
-        self._step_count = 0
+        return net
 
-        # controllers: dict[str, MicrogridAgent]
-        self.controllers = self._build_controllers()
+    def add_sgen(self, sgens):
+        if not isinstance(sgens, Iterable):
+            sgens = [sgens]
 
-        self.possible_agents = list(self.controllers.keys())
-        self.agents = self.possible_agents[:]  # alive agents
+        for sgen in sgens:
+            bus_id = pp.get_element_index(self.net, 'bus', self.name+' '+sgen.bus)
+            pp.create_sgen(self.net, bus_id, p_mw=sgen.state.P, sn_mva=sgen.sn_mva, 
+                        index=len(self.sgen), name=self.name+' '+sgen.name, 
+                        max_p_mw=sgen.max_p_mw, min_p_mw=sgen.min_p_mw, 
+                        max_q_mvar=sgen.max_q_mvar, min_q_mvar=sgen.min_q_mvar)
+            self.sgen[sgen.name] = sgen
 
-        # cache spaces
-        self._action_spaces = {
-            aid: self.controllers[aid].action_space()
-            for aid in self.possible_agents
-        }
-        self._observation_spaces = {
-            aid: self.controllers[aid].observation_space()
-            for aid in self.possible_agents
-        }
+    def add_storage(self, storages):
+        if not isinstance(storages, Iterable):
+            storages = [storages]
+        
+        for ess in storages:
+            bus_id = pp.get_element_index(self.net, 'bus', self.name+' '+ess.bus)
+            pp.create_storage(self.net, bus_id, ess.state.P, ess.max_e_mwh, 
+                            sn_mva=ess.sn_mva, soc_percent=ess.state.soc,
+                            min_e_mwh=ess.min_e_mwh, name=self.name+' '+ess.name, 
+                            index=len(self.storage), max_p_mw=ess.max_p_mw, 
+                            min_p_mw=ess.min_p_mw, max_q_mvar=ess.max_q_mvar, 
+                            min_q_mvar=ess.min_q_mvar)
+            self.storage[ess.name] = ess
 
+    def load_rescaling(self, net, scale):
+        local_load_ids = pp.get_element_index(net, 'load', self.name, False)
+        net.load.loc[local_load_ids, 'scaling'] *= scale
+
+    def step(self, net, action, t):
+        self._set_action(action)
+        self._update_state(net, t)
+
+    def reset(self, net, t):
+        for ess in self.storage.values():
+            ess.reset()
+        self._update_state(net, t)
+
+    def _get_obs(self, net):
+        obs = np.array([])
+        # P, Q, SoC of energy storage units
+        for ess in self.storage.values():
+            obs = np.concatenate([obs, ess.state.as_vector()])
+        # P, Q, UC status of generators
+        for dg in self.sgen.values():
+            obs = np.concatenate([obs, dg.state.as_vector()])
+        # P, Q at all buses
+        local_load_ids = pp.get_element_index(net, 'load', self.name, False)
+        load_pq = net.res_load.iloc[local_load_ids].values
+        obs = np.concatenate([obs, load_pq.ravel() / self.base_power])
+        
+        return obs.astype(np.float32)
+
+    def _set_action(self, action):
+        devices = list(self.storage.values()) + list(self.sgen.values())
+        for dev in devices:
+            # continuous actions
+            dev.action.c[:] = action[:dev.action.c.size]
+            if self.kwargs.get('discrete_action'):
+                cats = self.kwargs.get('discrete_action_cats')
+                low, high = dev.action.range
+                acts = np.linspace(low, high, cats).transpose()
+                dev.action.c[:] = [a[action[i]] for i, a in enumerate(acts)]
+            action = action[dev.action.c.size:]
+            # discrete action space
+            dev.action.d[:] = action[:dev.action.d.size]
+            action = action[dev.action.d.size:]
+
+    def _get_action_space(self):
+        devices = list(self.storage.values()) + list(self.sgen.values())
+        ac_space = dict()
+        for dev in devices:
+            # continuous action space
+            if dev.action.c.size > 0:
+                low, high = dev.action.range
+                ac_space[dev.name] = Box(low=low, high=high, dtype=np.float32)
+                if self.kwargs.get('discrete_action'):
+                    cats = self.kwargs.get('discrete_action_cats')
+                    if low.size == 1:
+                        ac_space[dev.name] = Discrete(cats)
+                    else:
+                        ac_space[dev.name] = MultiDiscrete([cats]*low.size)
+            # discrete action space
+            if dev.action.d.size > 0:
+                ac_space[dev.name] = Discrete(dev.action.ncats)
+
+        return ac_space
+
+    def _get_observation_space(self, net):
+        return Box(
+            low=-np.inf, 
+            high=np.inf, 
+            shape=self._get_obs(net).shape, 
+            dtype=np.float32)
+
+    def _combined_action_space(self):
+        low, high, discrete_n = [], [], []
+        for sp in self._get_action_space().values():
+            if isinstance(sp, Box):
+                low = np.append(low, sp.low)
+                high = np.append(high, sp.high)
+            elif isinstance(sp, Discrete):
+                discrete_n.append(sp.n)
+            elif isinstance(sp, MultiDiscrete):
+                discrete_n.extend(list(sp.nvec))
+
+        if len(low) and len(discrete_n):
+            raise Dict({"continuous": Box(low=low, high=high, dtype=np.float32),
+                        'discrete': MultiDiscrete(discrete_n)})
+        elif len(low): # continuous
+            return Box(low=low, high=high, dtype=np.float32)
+        elif len(discrete_n): # discrete
+            return MultiDiscrete(discrete_n)
+        else: # non actionable agents
+            return Discrete(1)
+
+    def _update_state(self, net, t):
+        load_scaling = self.dataset['load'][t]
+        solar_scaling = self.dataset['solar'][t]
+        wind_sclaing = self.dataset['wind'][t]
+
+        local_ids = pp.get_element_index(net, 'load', self.name, False)
+        net.load.loc[local_ids, 'scaling'] = load_scaling
+        self.load_rescaling(net, self.load_scale)
+
+        for name, ess in self.storage.items():
+            ess.update_state()
+            local_ids = pp.get_element_index(net, 'storage', self.name+' '+name)
+            states = ['p_mw', 'q_mvar', 'soc_percent', 'in_service']
+            values = [ess.state.P, ess.state.Q, ess.state.soc, bool(ess.state.on)]
+            net.storage.loc[local_ids, states] = values
+
+        for name, dg in self.sgen.items():
+            scaling = solar_scaling if dg.type == 'solar' else wind_sclaing
+            dg.update_state()
+            local_ids = pp.get_element_index(net, 'sgen', self.name+' '+name)
+            states = ['p_mw', 'q_mvar', 'in_service']
+            values = [dg.state.P, dg.state.Q, bool(dg.state.on)]
+            net.sgen.loc[local_ids, states] = values
+
+    def _update_cost_safety(self, net):
+        self.cost, self.safety = 0, 0
+        for ess in self.storage.values():
+            ess.update_cost_safety()
+            self.cost += ess.cost
+            self.safety += ess.safety
+        
+        for dg in self.sgen.values():
+            dg.update_cost_safety()
+            self.cost += dg.cost
+            self.safety += dg.safety
+
+        if net["converged"]:
+            local_bus_ids = pp.get_element_index(net, 'bus', self.name, False)
+            local_vm = net.res_bus.loc[local_bus_ids].vm_pu.values
+            overvoltage = np.maximum(local_vm - 1.05, 0).sum()
+            undervoltage = np.maximum(0.95 - local_vm, 0).sum()
+
+            local_line_ids = pp.get_element_index(net, 'line', self.name, False)
+            local_line_loading = net.res_line.loc[local_line_ids].loading_percent.values
+            overloading = np.maximum(local_line_loading - 100, 0).sum() * 0.01
+            
+            self.safety += overloading + overvoltage + undervoltage
+
+
+"""
+Networked Power Grid Environment
+"""
+from abc import abstractmethod
+
+class NetworkedGridEnv(ParallelEnv):
+    """
+    Networked multi-agent environment built by composing multiple GridEnv blocks.
+
+    This is a PettingZoo ParallelEnv (simultaneous-action) wrapper:
+      - step(actions): apply all agents' actions -> run one power flow -> compute per-agent outputs
+      - reset(): returns (obs_dict, infos_dict)
+    Subclasses should implement:
+      - _build_net(): build self.net and register agents (see notes below)
+      - _reward_and_safety(): return (rewards_dict, safety_dict) keyed by agent_id
+
+    IMPORTANT (backwards compat):
+      Historically, subclasses set:
+        self.possible_agents = {name: GridEnv, ...}
+        self.agents = self.possible_agents
+      This class will normalize those into:
+        self._agent_dict: dict[name, GridEnv]
+        self.possible_agents: list[name]
+        self.agents: list[name]  (PettingZoo live agents)
+    """
+
+    def __init__(self, env_config):
+        self.env_config = env_config
+        self.train = env_config.get('train', True)
+        self.type = env_config.get('type', 'AC')
+
+        # RNG compatible with Gymnasium/PettingZoo
+        self.np_random, _ = seeding.np_random(env_config.get("seed", None))
+
+        self._build_net()
+        self._normalize_agents()
+        self._init_space()
+
+    def _normalize_agents(self):
+        # Subclasses may set possible_agents/agents as dicts (old style).
+        if isinstance(getattr(self, "possible_agents", None), dict):
+            self._agent_dict = self.possible_agents
+            self.possible_agents = list(self._agent_dict.keys())
+        else:
+            # If possible_agents already a list, expect an agent dict stored separately.
+            self._agent_dict = getattr(self, "_agent_dict", {})
+
+        # old subclasses often did: self.agents = self.possible_agents (dict)
+        if isinstance(getattr(self, "agents", None), dict):
+            # Trust dict content
+            self._agent_dict = self.agents
+            self.possible_agents = list(self._agent_dict.keys())
+
+        # PettingZoo live agent list
+        self.agents = self.possible_agents[:]
+        # Backwards-compatible aliases for existing topology/reward code
+        self.agent_envs = self._agent_dict
+        self.possible_agent_envs = self._agent_dict
+
+
+    @property
+    def actionable_agents(self):
+        return {n: a for n, a in self._agent_dict.items()
+                if len(a._get_action_space()) > 0}
+
+    @abstractmethod
+    def _build_net(self):
+        pass
+
+    @abstractmethod
+    def _reward_and_safety(self):
+        pass
+
+    # --- PettingZoo required methods ---
     def observation_space(self, agent):
-        return self._observation_spaces[agent]
+        return self.observation_spaces[agent]
 
     def action_space(self, agent):
-        return self._action_spaces[agent]
+        return self.action_spaces[agent]
 
-    def reset(self, seed=None, options=None):
-        if seed is not None:
-            np.random.seed(seed)
+    # --- Core env loop ---
+    def step(self, action_n):
+        """
+        action_n: dict[agent_id, action]
+        Returns: obs, rewards, terminations, truncations, infos (all dicts keyed by agent_id)
+        """
+        alive = self.agents[:]  # agents alive at start of step
 
-        self._step_count = 0
-        self.agents = self.possible_agents[:]
+        # Apply actions
+        for name, action in action_n.items():
+            if name in self.actionable_agents:
+                if self.env_config.get('share_policy'):
+                    # action is a dict keyed by agent_id (shared policy input)
+                    action = action[name]
+                self.actionable_agents[name].step(self.net, action, self._t)
 
-        # choose start time
-        self._t0 = self._sample_start_index(options)
-        self._t = self._t0
-
-        # reset net + controllers
-        self.net = self._build_network()
-        for ctrl in self.controllers.values():
-            ctrl.reset(self.net, t=self._t)
-
-        # initial PF (optional but often useful)
-        converged = self._run_powerflow()
-
-        obs = {aid: self.controllers[aid].observe(self.net, t=self._t) for aid in self.agents}
-        infos = {aid: {"converged": converged} for aid in self.agents}
-        return obs, infos
-
-    def step(self, actions):
-        # actions: dict[agent_id, action]
-        if not self.agents:
-            raise RuntimeError("step() called after all agents are done")
-
-        # 1) apply exogenous profiles for this timestep (loads, solar, wind, etc.)
-        self._apply_profiles(t=self._t)
-
-        # 2) apply each agent's actions to its devices / net
-        for aid, act in actions.items():
-            self.controllers[aid].apply_action(self.net, act, t=self._t)
-
-        # 3) run PF once
-        converged = self._run_powerflow()
-
-        # 4) compute obs/reward/termination
-        obs = {aid: self.controllers[aid].observe(self.net, t=self._t) for aid in self.agents}
-
-        rewards = {aid: self.controllers[aid].reward(self.net, t=self._t, converged=converged)
-                   for aid in self.agents}
-
-        # global termination conditions (episode length, non-convergence, etc.)
-        self._step_count += 1
-        self._t += 1
-
-        terminations = {aid: False for aid in self.agents}
-        truncations = {aid: (self._step_count >= self.max_episode_steps) for aid in self.agents}
-
-        # if you want "hard fail" termination on non-convergence:
-        # if not converged: terminations = {aid: True for aid in self.agents}
-
-        infos = {aid: {"converged": converged} for aid in self.agents}
-
-        # If the episode ended, PettingZoo expects env.agents to become []
-        if all(truncations.values()) or all(terminations.values()):
-            self.agents = []
-
-        return obs, rewards, terminations, truncations, infos
-
-    def _run_powerflow(self):
+        # Run power flow for the whole network
         try:
             pp.runpp(self.net)
             self.net["converged"] = True
-            return True
         except Exception:
             self.net["converged"] = False
-            return False
+
+        # Update each agent's internal cost/safety (post power flow)
+        for agent in self._agent_dict.values():
+            agent._update_cost_safety(self.net)
+
+        rewards, safety = self._reward_and_safety()
+
+        # Reward sharing option
+        if self.env_config.get('share_reward'):
+            shared_reward = float(np.mean(list(rewards.values()))) if len(rewards) else 0.0
+            rewards = {name: shared_reward for name in self._agent_dict}
+
+        # timestep counter
+        self._t = self._t + 1 if self._t < self.data_size else 0
+
+        # done/truncation logic (all agents end together by default)
+        done = (self._t % self.max_episode_steps) == 0
+        terminations = {name: bool(done) for name in alive}
+        truncations = {name: bool(done) for name in alive}
+
+        obs = self._get_obs(alive)
+
+        # infos: expose safety by default (and converged flag)
+        infos = {name: {"safety": safety.get(name, 0.0), "converged": bool(self.net.get("converged", False))}
+                 for name in alive}
+
+        # Update PettingZoo live agent list for NEXT step
+        self.agents = [a for a in alive if not (terminations.get(a, False) or truncations.get(a, False))]
+
+        return obs, rewards, terminations, truncations, infos
+
+    def reset(self, seed=None, options=None):
+        # reseed if requested
+        if seed is not None:
+            self.np_random, _ = seeding.np_random(seed)
+
+        # Reset live agents list
+        self.agents = self.possible_agents[:]
+
+        # reset all agents/time
+        if self.train:
+            self._day = int(self.np_random.integers(self.total_days - 1)) if self.total_days > 1 else 0
+            self._t = self._day * self.max_episode_steps
+            for agent in self._agent_dict.values():
+                agent.reset(self.net, self._t)
+        else:
+            if hasattr(self, '_t'):
+                self._day += 1
+            else:
+                self._t, self._day = 0, 0
+
+        try:
+            pp.runpp(self.net)
+            self.net["converged"] = True
+        except Exception:
+            self.net["converged"] = False
+
+        obs = self._get_obs(self.agents)
+        infos = {name: {"converged": bool(self.net.get("converged", False))} for name in self.agents}
+        return obs, infos
+
+    def _get_obs(self, agent_list):
+        obs_dict = {n: self._agent_dict[n]._get_obs(self.net) for n in agent_list}
+
+        if self.env_config.get('share_policy'):
+            # Build a dict obs space once in _init_space, then flatten each agent's "masked" dict
+            shared_obs_dict = {}
+            for agent in agent_list:
+                masked = {
+                    name: (np.zeros_like(obs) if agent != name else obs)
+                    for name, obs in obs_dict.items()
+                }
+                flat = flatten(self._shared_ob_space, masked)
+                shared_obs_dict[agent] = flat.astype(np.float32)
+
+            return shared_obs_dict
+
+        return obs_dict
+
+    def _init_space(self):
+        ac_spaces = {}
+        ob_spaces = {}
+        for name, agent in self._agent_dict.items():
+            ac_spaces[name] = agent._combined_action_space()
+            ob_spaces[name] = agent._get_observation_space(self.net)
+
+        if self.env_config.get('share_policy'):
+            shared_ac_space = Dict(ac_spaces)
+            shared_ob_space = Dict(ob_spaces)
+            self._shared_ob_space = shared_ob_space
+            self._flattened_ob_space = flatten_space(shared_ob_space)
+
+            for name in self._agent_dict.keys():
+                ac_spaces[name] = shared_ac_space
+                ob_shape = self._flattened_ob_space.shape
+                ob_spaces[name] = Box(-np.inf, np.inf, shape=ob_shape, dtype=np.float32)
+
+        # PettingZoo uses methods action_space(agent)/observation_space(agent)
+        self.action_spaces = ac_spaces
+        self.observation_spaces = ob_spaces
+
