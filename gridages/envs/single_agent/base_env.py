@@ -56,6 +56,14 @@ class GridBaseEnv(gym.Env, metaclass=abc.ABCMeta):
         self.load_scale = float(self.cfg.get("load_scale", 1.0))
         self.train = "train" if self.cfg.get("train", True) else "test"
 
+        # store_info: list of keys you want in info. Example:
+        #   ["operating_cost", "bus_voltage", "line_loading"]
+        # store_arrays: include full arrays in info (can be heavy)
+        # store_summaries: include scalar summaries (mean/min/max/violations)
+        self.store_info = set(self.cfg.get("store_info", []) or [])
+        self.store_arrays = bool(self.cfg.get("store_arrays", False))
+        self.store_summaries = bool(self.cfg.get("store_summaries", True))
+
         # will be set by _build_net
         self.net = None
         self.area = None
@@ -139,10 +147,8 @@ class GridBaseEnv(gym.Env, metaclass=abc.ABCMeta):
         self._apply_dataset_scalers()
 
         obs = self._get_obs()
-        info = {
-            "t": self.t,
-            "converged": converged,
-        }
+        info = self._collect_info(converged)
+
         return obs, reward, terminated, truncated, info
 
     def _solve_pf(self) -> bool:
@@ -230,6 +236,68 @@ class GridBaseEnv(gym.Env, metaclass=abc.ABCMeta):
                 dev.update_cost_safety()
             else:
                 dev.update_cost_safety()
+
+    def _collect_info(self, converged: bool) -> Dict[str, Any]:
+        """
+        Conditionally add scalars/arrays to `info` based on env_config:
+
+        env_config examples:
+          {
+            "store_info": ["operating_cost", "bus_voltage", "line_loading"],
+            "store_arrays": True,      # include full arrays
+            "store_summaries": True,   # include scalar summaries
+          }
+        """
+        info: Dict[str, Any] = {
+            "t": self.t,
+            "converged": converged,
+        }
+
+        wanted = self.store_info
+        store_arrays = self.store_arrays
+        store_summ = self.store_summaries
+
+        # Operating cost (scalar): sum of device costs if present
+        if "operating_cost" in wanted:
+            cost = 0.0
+            for dev in self.devices.values():
+                if hasattr(dev, "cost"):
+                    cost += float(dev.cost)
+            info["operating_cost"] = float(cost)
+
+        if not converged:
+            return info
+
+        # Bus voltage in this area
+        if "bus_voltage" in wanted and hasattr(self.net, "res_bus") and len(self.net.res_bus):
+            bus_ids = pp.get_element_index(self.net, "bus", self.area, False)
+            if bus_ids is not None and len(bus_ids):
+                v = self.net.res_bus.loc[bus_ids, "vm_pu"].values.astype(np.float32)
+
+                if store_arrays:
+                    info["bus_voltage"] = v
+
+                if store_summ and v.size:
+                    info["bus_voltage_mean"] = float(v.mean())
+                    info["bus_voltage_min"] = float(v.min())
+                    info["bus_voltage_max"] = float(v.max())
+                    info["bus_voltage_viol_count"] = float(np.sum((v < 0.95) | (v > 1.05)))
+
+        # Line loading in this area
+        if "line_loading" in wanted and hasattr(self.net, "res_line") and len(self.net.res_line):
+            line_ids = pp.get_element_index(self.net, "line", self.area, False)
+            if line_ids is not None and len(line_ids):
+                l = self.net.res_line.loc[line_ids, "loading_percent"].values.astype(np.float32)
+
+                if store_arrays:
+                    info["line_loading"] = l
+
+                if store_summ and l.size:
+                    info["line_loading_mean"] = float(l.mean())
+                    info["line_loading_max"] = float(l.max())
+                    info["line_over_100_count"] = float(np.sum(l > 100.0))
+
+        return info
 
     def _device_action_slices(self):
         """
@@ -345,6 +413,9 @@ class GridBaseEnv(gym.Env, metaclass=abc.ABCMeta):
         obs = np.concatenate([obs, (line_loading / 100.)])
 
         return obs.astype(np.float32)
+
+    def _get_info_keys(self) -> Iterable[str]:
+        return []
 
     def _build_obs_space(self):
         shape = self._get_obs().shape
