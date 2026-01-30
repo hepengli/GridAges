@@ -7,7 +7,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback, BaseCallback
 
-from gridages.envs.single_agent.optimal_power_flow.ieee13_mg import IEEE13Env
+from gridages.envs.single_agent.microgrid_ems.ieee13_mg import IEEE13Env
 
 LOG_DIR = "./logs/ppo"
 TB_LOG = os.path.join(LOG_DIR, "tb")
