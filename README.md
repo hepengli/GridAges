@@ -68,7 +68,7 @@ Below are the single-line diagrams of two networks:
 
 ### IEEE 13-Bus System
 % Please link to the example tutorial or a Colab file for quick run
-<img src="docs/images/ieee13.pdf" alt="IEEE 13 Bus System" width="500"/>
+<img src="docs/images/ieee13.png" alt="IEEE 13 Bus System" width="500"/>
 
 ### IEEE 34-Bus System
 <img src="docs/images/ieee34.png" alt="IEEE 34 Bus System" width="700"/>
