@@ -148,6 +148,7 @@ class GridBaseEnv(gym.Env, metaclass=abc.ABCMeta):
 
         obs = self._get_obs()
         info = self._collect_info(converged)
+        info.update({"s": float(safety)})  # for CPO cost metric
 
         return obs, reward, terminated, truncated, info
 

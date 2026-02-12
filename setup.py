@@ -38,6 +38,12 @@ setup(
             "build",
             "twine",
         ],
+        "docs": [
+            "sphinx", 
+            "myst-parser", 
+            "furo", 
+            "sphinx-copybutton"
+        ],
     },
     keywords=[
         "power-grid",
