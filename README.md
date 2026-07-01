@@ -65,15 +65,3 @@ print("reward=", reward, "converged=", info.get("converged"))
 
 **Tip:** wrap with `NormalizeActionWrapper` if your agent outputs values in `[-1, 1]`;  
 the environment automatically rescales to true physical ranges internally.
-
-## Example Networks
-** ADD links to the examples **
-This repository includes standard IEEE test systems used for demonstration and validation.  
-Below are the single-line diagrams of two networks:
-
-### IEEE 13-Bus System
-% Please link to the example tutorial or a Colab file for quick run
-<img src="docs/images/ieee13.png" alt="IEEE 13 Bus System" width="500"/>
-
-### IEEE 34-Bus System
-<img src="docs/images/ieee34.png" alt="IEEE 34 Bus System" width="700"/>
