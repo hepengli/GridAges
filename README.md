@@ -5,9 +5,9 @@ It provides modular device models (DG, RES, ESS, Shunt, Transformer, Grid) with 
 It features plug-and-play APIs for users to implement various grid edge scenarios.
 
 
-- Agent-centricity:
-- Module local models:
-- Safety-aware evaluation:
+- Agent-centricity: AGES treats agents (e.g., power units) as the organizing abstraction for grid-edge simulation, not merely as controllers wrapped around an environment. 
+- Module local models: AGES supports modular local physical/operational models that can be composed into heterogeneous grid-edge scenarios. 
+- Safety-aware evaluation: AGES embeds the operational safety, constraint violations, and resilience-related conditions into agent design and elevates such metrics as core evaluation outputs. 
 
 ---
 
