@@ -1,5 +1,6 @@
 import numpy as np
 import pandapower as pp
+from pandapower.toolbox import get_element_index
 from typing import Dict, Tuple, Iterable, Any, Optional
 
 import gymnasium as gym
@@ -54,7 +55,7 @@ class NormalizeActionWrapper(gym.Wrapper):
 
 def pp_get_idx_safe(net, table: str, name: str) -> Optional[int]:
     try:
-        return int(pp.get_element_index(net, table, name))
+        return int(get_element_index(net, table, name))
     except Exception:
         return None
 
@@ -63,7 +64,7 @@ def attach_device_to_net(net, area_name: str, dev):
     def _bus_id(bus_name):
         if len(area_name) > 0: 
             bus_name = f"{area_name} {bus_name}"
-        return pp.get_element_index(net, "bus", bus_name)
+        return get_element_index(net, "bus", bus_name)
 
     cls = dev.__class__.__name__
     name = f"{area_name} {dev.name}" if len(area_name) > 0 else dev.name

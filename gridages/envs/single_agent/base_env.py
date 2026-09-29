@@ -2,6 +2,7 @@
 import abc
 import numpy as np
 import pandapower as pp
+from pandapower.toolbox import get_element_index
 from collections import OrderedDict
 from typing import Dict, Tuple, Iterable, Any, Optional, TypeVar
 
@@ -167,7 +168,7 @@ class GridBaseEnv(gym.Env, metaclass=abc.ABCMeta):
         price  = float(self.dataset["price"][self.t])
 
         load_scaling = load * self.load_scale
-        ids = pp.get_element_index(self.net, "load", self.area, False)
+        ids = get_element_index(self.net, "load", self.area, False)
         self.net.load.loc[ids, "scaling"] = load_scaling
 
         for name, dev in self.devices.items():
@@ -271,7 +272,7 @@ class GridBaseEnv(gym.Env, metaclass=abc.ABCMeta):
 
         # Bus voltage in this area
         if "bus_voltage" in wanted and hasattr(self.net, "res_bus") and len(self.net.res_bus):
-            bus_ids = pp.get_element_index(self.net, "bus", self.area, False)
+            bus_ids = get_element_index(self.net, "bus", self.area, False)
             if bus_ids is not None and len(bus_ids):
                 v = self.net.res_bus.loc[bus_ids, "vm_pu"].values.astype(np.float32)
 
@@ -286,7 +287,7 @@ class GridBaseEnv(gym.Env, metaclass=abc.ABCMeta):
 
         # Line loading in this area
         if "line_loading" in wanted and hasattr(self.net, "res_line") and len(self.net.res_line):
-            line_ids = pp.get_element_index(self.net, "line", self.area, False)
+            line_ids = get_element_index(self.net, "line", self.area, False)
             if line_ids is not None and len(line_ids):
                 l = self.net.res_line.loc[line_ids, "loading_percent"].values.astype(np.float32)
 
